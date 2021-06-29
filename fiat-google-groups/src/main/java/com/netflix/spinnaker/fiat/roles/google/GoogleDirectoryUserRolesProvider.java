@@ -72,6 +72,7 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
 
   private static final Collection<String> SERVICE_ACCOUNT_SCOPES =
       Collections.singleton(DirectoryScopes.ADMIN_DIRECTORY_GROUP_READONLY);
+  private static final String SERVICE_ACCOUNT_SUFFIX = "@managed-service-account";
 
   @Override
   public void afterPropertiesSet() throws Exception {
@@ -105,6 +106,12 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
     }
   }
 
+  protected Collection<String> filterEmails(Collection<String> users) {
+    return users.stream()
+        .filter(u -> !u.endsWith(SERVICE_ACCOUNT_SUFFIX))
+        .collect(Collectors.toSet());
+  }
+
   @Override
   public Map<String, Collection<Role>> multiLoadRoles(Collection<ExternalUser> users) {
     if (users == null || users.isEmpty()) {
@@ -113,36 +120,42 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
 
     Collection<String> userEmails =
         users.stream().map(ExternalUser::getId).collect(Collectors.toList());
+
     HashMap<String, Collection<Role>> emailGroupsMap = new HashMap<>();
+
     Directory service = getDirectoryService();
     BatchRequest batch = service.batch();
-    userEmails.forEach(
-        email -> {
-          try {
-            GroupBatchCallback callback =
-                new GroupBatchCallback().setEmailGroupsMap(emailGroupsMap).setEmail(email);
-            HttpRequest request =
-                service
-                    .groups()
-                    .list()
-                    .setDomain(config.getDomain())
-                    .setUserKey(email)
-                    .buildHttpRequest();
-            HttpBackOffUnsuccessfulResponseHandler handler =
-                new HttpBackOffUnsuccessfulResponseHandler(new ExponentialBackOff());
-            handler.setBackOffRequired(
-                response -> {
-                  int code = response.getStatusCode();
-                  // 403 is Google's Rate limit exceeded response.
-                  return code == 403 || code / 100 == 5;
-                });
-            request.setUnsuccessfulResponseHandler(handler);
-            batch.queue(request, Groups.class, GoogleJsonErrorContainer.class, callback);
 
-          } catch (IOException ioe) {
-            throw new RuntimeException(ioe);
-          }
-        });
+    Collection<String> validEmails = filterEmails(userEmails);
+    validEmails.stream()
+        .forEach(
+            email -> {
+              try {
+                // TODO, does this need to happen to @managed-service-user too?
+                GroupBatchCallback callback =
+                    new GroupBatchCallback().setEmailGroupsMap(emailGroupsMap).setEmail(email);
+                HttpRequest request =
+                    service
+                        .groups()
+                        .list()
+                        .setDomain(config.getDomain())
+                        .setUserKey(email)
+                        .buildHttpRequest();
+                HttpBackOffUnsuccessfulResponseHandler handler =
+                    new HttpBackOffUnsuccessfulResponseHandler(new ExponentialBackOff());
+                handler.setBackOffRequired(
+                    response -> {
+                      int code = response.getStatusCode();
+                      // 403 is Google's Rate limit exceeded response.
+                      return code == 403 || code / 100 == 5;
+                    });
+                request.setUnsuccessfulResponseHandler(handler);
+                batch.queue(request, Groups.class, GoogleJsonErrorContainer.class, callback);
+
+              } catch (IOException ioe) {
+                throw new RuntimeException(ioe);
+              }
+            });
 
     try {
       batch.execute();
@@ -160,6 +173,10 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
     }
 
     String userEmail = user.getId();
+    // TODO; this might need to be returned in the role list?
+    if (userEmail.endsWith(SERVICE_ACCOUNT_SUFFIX)) {
+      return new ArrayList<>();
+    }
 
     try {
       Groups groups = getGroupsFromEmail(userEmail);
@@ -205,7 +222,8 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
     }
   }
 
-  private Directory getDirectoryService() {
+  //  private Directory getDirectoryService() {
+  protected Directory getDirectoryService() {
     HttpTransport httpTransport = new NetHttpTransport();
     JacksonFactory jacksonFactory = new JacksonFactory();
     GoogleCredential credential = getGoogleCredential();

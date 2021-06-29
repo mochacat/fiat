@@ -106,6 +106,12 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
     }
   }
 
+  protected Collection<String> filterEmails(Collection<String> users) {
+    return users.stream()
+        .filter(u -> !u.endsWith(SERVICE_ACCOUNT_SUFFIX))
+        .collect(Collectors.toSet());
+  }
+
   @Override
   public Map<String, Collection<Role>> multiLoadRoles(Collection<ExternalUser> users) {
     if (users == null || users.isEmpty()) {
@@ -114,12 +120,14 @@ public class GoogleDirectoryUserRolesProvider implements UserRolesProvider, Init
 
     Collection<String> userEmails =
         users.stream().map(ExternalUser::getId).collect(Collectors.toList());
+
     HashMap<String, Collection<Role>> emailGroupsMap = new HashMap<>();
+
     Directory service = getDirectoryService();
     BatchRequest batch = service.batch();
 
-    userEmails.stream()
-        .filter(u -> !u.endsWith(SERVICE_ACCOUNT_SUFFIX))
+    Collection<String> validEmails = filterEmails(userEmails);
+    validEmails.stream()
         .forEach(
             email -> {
               try {
